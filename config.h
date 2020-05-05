@@ -1,16 +1,10 @@
 /* defines the style of the resulting render
- * -2 -> greyscale for iterations between 100 and 1000
- * -1 -> greyscale for more than 1000 iterations
  * 0 -> use the map file specified by mapfile
  * 1 -> randomly generated colours
- * 2 -> bi flag alternating each pixel
- * 3 -> pan flag alternating each pixel
- * 4 -> trans flag alternating each pixel
  */
-#define style 1
+#define style 0
 
-//const char mapfile[] = "colourmaps/Skydye05.cmap";
-const char mapfile[] = "colourmaps/Lindaa04.cmap";
+const char mapfile[] = "colourmaps/trans.cmap";
 /* dank:
 damien3, Digiorg1, bud(2,4), droz(22,60)
 glasses2, headache, Lindaa(02,04,06,09,10,16,17)

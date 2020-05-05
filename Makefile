@@ -1,11 +1,9 @@
-CC = cc
-CFLAGS = -pedantic -std=c99 -Wall -Wextra -Ofast -D_DEFAULT_SOURCE
-LDFLAGS = -lpthread
+include config.mk
 
 SRC = ${wildcard *.c}
 OBJ = ${SRC:.c=.o}
 
-all: options f2g
+all: options f2r
 
 options:
 	@echo f2g build options:
@@ -16,11 +14,10 @@ options:
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-f2g: ${OBJ}
-	${CC} -o $@ ${OBJ} ${LDFLAGS}
+${OBJ}: config.h
 
-debug: ${OBJ}
-	${CC} ${OBJ} ${CFLAGS} -g3 -OO -o f2g
+f2r: ${OBJ}
+	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
 clean:
 	rm -f f2g ${OBJ}
