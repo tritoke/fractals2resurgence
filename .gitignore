@@ -1,5 +1,5 @@
 # vim session files
-*.vim
+Session.vim
 
 # images
 *.ff

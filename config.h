@@ -1,10 +1,10 @@
-/* defines the style of the resulting render
- * 0 -> use the map file specified by mapfile
- * 1 -> randomly generated colours
+/*
+ * This file defines a set of compile-time defaults these options
+ * can all be overridden with runtime flags later on
  */
-#define style 0
 
-const char mapfile[] = "colourmaps/trans.cmap";
+/* the colourmap file to use */
+char mapfile[] = "colourmaps/Skydye05.cmap";
 /* dank:
 damien3, Digiorg1, bud(2,4), droz(22,60)
 glasses2, headache, Lindaa(02,04,06,09,10,16,17)
@@ -14,23 +14,18 @@ lkmtch(05,12),Skydye05
 // the x and y lengths of the image in numbers of pixels
 // as well as the number of threads to use and the number
 // of iterations before declaring a value to be in the set
-#define ratio 1
-const size_t xlen = 2000;
-const size_t ylen = (xlen * ratio);
-const size_t iterations = 2000;
+long double ratio = 1.0;
+uint32_t xlen = 20000;
+uint32_t iterations = 1000000;
 
 // the number of threads to use when rendering the image
-#define threads 8
+uint8_t threads = 8;
 
-// the bottom left (blx, bly) and top right (trx, try) coordinates
-// defining the area of the fractal to render
+enum Fractal {Julia, Mandelbrot};
+enum Fractal fractal_type = Julia;
 
-
-/* If defined this will create a julia set with c = c_x + i * c_y */
-//#define JULIA
-#ifdef JULIA  /* render julia set */
-
-/*
+/* If defined this will create a julia set with c = c_x + i * c_y
+ *
  * Good values:
  *  (-0.8, 0.156)
  *  (-0.4, 0.6)
@@ -38,31 +33,11 @@ const size_t iterations = 2000;
  *  (-0.835, -0.2321)
  */
 
-const long double c_x = -0.8;
-const long double c_y = 0.156;
+long double c_x = -0.8;
+long double c_y = 0.156;
 
-#endif
+long double radius = 2.0F,
+            centre_x = 0,
+            centre_y = 0;
 
-
-#if (0) // close
-
-#define radius 0.0001
-#define centre_x -0.7496866
-#define centre_y (radius * ratio) + 0.034334
-
-#else // full set
-
-#define radius 2
-#define centre_x 0
-#define centre_y 0
-
-#endif
-
-const long double x_off = 0,
-                  y_off = 0,
-                  blx = centre_x - (radius * 1) + x_off,
-                  bly = centre_y - (radius * ratio) + y_off,
-                  trx = centre_x + (radius * 1) + x_off,
-                  try = centre_y + (radius * ratio) + y_off;
-
-#define fname "out.ff"
+char fname[] = "out.ff";

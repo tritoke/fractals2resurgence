@@ -7,11 +7,11 @@ typedef struct {
 	uint16_t alpha;
 } Pixel;
 
-typedef struct {
+struct colourmap {
 	size_t size;
 	Pixel * colours;
-} Cmap;
+};
 
-Cmap * read_map(const char *);
-void free_cmap(Cmap *);
-Cmap * gen_random_map(size_t size);
+struct colourmap * read_map(const char *);
+void free_cmap(struct colourmap *);
+struct colourmap * gen_random_map(size_t size);

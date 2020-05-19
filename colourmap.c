@@ -1,11 +1,16 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
+#include <ctype.h>
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 #include "colourmap.h"
 
-Cmap * read_map(const char * mapfile) {
+struct colourmap * read_map(const char * mapfile) {
+	/*
+	 * Read a colourmap file into a colourmap struct
+	 */
+
 	/* Initialise the pixel we will read items into */
 	size_t currlim = 256;
 	Pixel * pixels = calloc(currlim, sizeof(Pixel));
@@ -20,10 +25,11 @@ Cmap * read_map(const char * mapfile) {
 	/* Parse the contents of the file */
 	char * buf = NULL;
 	size_t n = 0,
-				 lineno = 0;
+				 lineno = 0,
+				 colourno = 0;
 	ssize_t chars_read;
 	while ((chars_read = getline(&buf, &n, fp)) != -1) {
-		if (currlim == lineno) {
+		if (currlim == colourno) {
 			/* Pixels array is full, double the space we have allocated */
 			currlim <<= 2;
 			if ((pixels = reallocarray(pixels, currlim, sizeof(Pixel))) == NULL) {
@@ -32,21 +38,29 @@ Cmap * read_map(const char * mapfile) {
 		}
 
 		int items_parsed;
-		Pixel * pixel = &pixels[lineno];
-		if (buf[0] == '#') { /* HTML hex colour */
-			items_parsed = sscanf(buf, "#%2hx%2hx%2hx", &pixel->red, &pixel->green, &pixel->blue);
-		} else { /* original map colour format */
-			items_parsed = sscanf(buf, "%3hu %3hu %3hu", &pixel->red, &pixel->green, &pixel->blue);
+		Pixel * pixel = &pixels[colourno];
+ 		/* lines starting with a hashtag are colourcodes */
+		if (buf[0] == '#') {
+			if (!isgraph(buf[4])) { /* short format hexcode #abc */
+				items_parsed = sscanf(buf, "#%1hx%1hx%1hx", &pixel->red, &pixel->green, &pixel->blue);
+				pixel->red   |= pixel->red   << 4;
+				pixel->green |= pixel->green << 4;
+				pixel->blue  |= pixel->blue  << 4;
+			} else { /* long formax hex code #aabbcc */
+				items_parsed = sscanf(buf, "#%2hx%2hx%2hx", &pixel->red, &pixel->green, &pixel->blue);
+			}
+
+			if (items_parsed != 3) {
+				/* parse error */
+				fprintf(stderr, "[read_map]\tFailed to parse line %ld of colourmap file %s\n", lineno, mapfile);
+				exit(EXIT_FAILURE);
+			}
+
+			/* Set pixel as opaque */
+			pixels[colourno++].alpha = UINT16_MAX;
 		}
 
-		if (items_parsed != 3) {
-			/* parse error */
-			fprintf(stderr, "[read_map]\tFailed to parse line %ld of colourmap file %s\n", lineno, mapfile);
-			exit(EXIT_FAILURE);
-		}
-
-		/* Set pixel as opaque */
-		pixels[lineno++].alpha = UINT16_MAX;
+		lineno++;
 	}
 
 	/* Check errno after getline fails */
@@ -59,41 +73,23 @@ Cmap * read_map(const char * mapfile) {
 	free(buf);
 
 	/* trim off the unused space in pixels array */
-	if ((pixels = reallocarray(pixels, lineno, sizeof(Pixel))) == NULL) {
+	if ((pixels = reallocarray(pixels, colourno, sizeof(Pixel))) == NULL) {
 reallocarray_error:
 		fputs("[read_map]\treallocarray failed to resize the pixels array -- out of memory", stderr);
 		exit(EXIT_FAILURE);
 	}
 
 	/* Create the colourmap */
-	Cmap * cmap = calloc(1, sizeof(Cmap));
-	cmap->size = lineno;
+	struct colourmap * cmap = calloc(1, sizeof(struct colourmap));
+	cmap->size = colourno;
 	cmap->colours = pixels;
 	return cmap;
 }
 
-void free_cmap(Cmap * cmap) { 
+void free_cmap(struct colourmap * cmap) { 
+	/*
+	 * Free the colourmap struct
+	 */
 	free(cmap->colours);
 	free(cmap);
 }
-
-Cmap * gen_random_map(const size_t size) {
-	/* Generate a random colour map */
-
-	/* Allocate the space to store the pixels */
-	Pixel * pixels = calloc(size, sizeof(Pixel));
-
-  srand(time(NULL));
-  for (size_t i = 0; i < size; i++) {
-    pixels[i].red   = rand() % UINT16_MAX;
-    pixels[i].green = rand() % UINT16_MAX;
-    pixels[i].blue  = rand() % UINT16_MAX;
-    pixels[i].alpha = UINT16_MAX;
-  }
-
-	Cmap * cmap = calloc(size, sizeof(Cmap));
-	cmap->size = size;
-	cmap->colours = pixels;
-	return cmap;
-}
-

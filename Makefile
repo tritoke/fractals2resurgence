@@ -6,7 +6,7 @@ OBJ = ${SRC:.c=.o}
 all: options f2r
 
 options:
-	@echo f2g build options:
+	@echo f2r build options:
 	@echo "CFLAGS   = ${CFLAGS}"
 	@echo "LDFLAGS  = ${LDFLAGS}"
 	@echo "CC       = ${CC}"
@@ -20,6 +20,6 @@ f2r: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
 clean:
-	rm -f f2g ${OBJ}
+	rm -f f2r ${OBJ}
 
 .PHONY: all options clean
