@@ -1,25 +1,30 @@
 #include <arpa/inet.h>
 #include <getopt.h>
-#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/queue.h>
-#include <errno.h>
-#include "colourmap.h"
+#include "cmap.h"
+
+/* enum representing the different types of fractals available */
+enum Fractal {Julia, Mandelbrot};
+
+typedef struct {
+	long double x;
+	long double y;
+} Point;
+
 #include "config.h"
 
 struct settings {
 	uint32_t width;
 	uint32_t height;
-	long double centre_x;
-	long double centre_y;
-	long double radius;
-	long double ratio;
-	long double julia_x;
-	long double julia_y;
+	uint64_t iterations;
+	Point bottom_left;
+	Point top_right;
+	Point julia_centre;
 	enum Fractal fractal_type;
 	struct colourmap * colourmap;
 };
@@ -52,34 +57,63 @@ struct ff_header {
 	uint32_t height;
 };
 
+static void parse_options(int, char **, enum Fractal *, uint32_t *, char **, long double *, uint32_t *, uint64_t *, long double *, Point *, Point *, char **);
+static void usage(const char *);
 static void * rowrenderer(void *);
 static void * writer_thread(void *);
-static void colour(uint32_t, uint32_t, Pixel *, struct settings *);
+static void colour(const uint32_t, const uint32_t, Pixel *, const struct settings *);
 
-int main(void) {
-	/* TODO: command line option parsing */
+int main(int argc, char * argv[]) {
+	extern enum Fractal fractal_type;
+	extern uint32_t threads;
+	extern char * mapfile;
+	extern long double ratio;
+	extern uint32_t xlen;
+	extern uint64_t iterations;
+	extern long double xlen_real;
+	extern Point image_centre;
+	extern Point julia_centre;
+	extern char * outfile;
+	/* Parse the command line options */
+	parse_options(argc, argv, &fractal_type, &threads, &mapfile, &ratio, &xlen, &iterations, &xlen_real, &image_centre, &julia_centre, &outfile);
 
-	/* Create the settings struct set to compile time defaults */
+	/* create the settings struct */
+	long double ylen_real = xlen_real * ratio;
+
+	Point bottom_left = {
+		.x = image_centre.x - (xlen_real / 2),
+		.y = image_centre.y - (ylen_real / 2),
+	};
+
+	Point top_right = {
+		.x = image_centre.x + (xlen_real / 2),
+		.y = image_centre.y + (ylen_real / 2),
+	};
+
 	struct settings settings = {
 		.width = xlen,
 		.height = xlen * ratio,
-		.centre_x = centre_x,
-		.centre_y = centre_y,
-		.radius = radius,
-		.ratio = ratio,
-		.julia_x = c_x,
-		.julia_y = c_y,
+		.iterations = iterations,
+		.bottom_left = bottom_left,
+		.top_right = top_right,
+		.julia_centre = julia_centre,
 		.fractal_type = fractal_type,
-		.colourmap = read_map(mapfile)
+		.colourmap = read_map(mapfile),
 	};
 
 	/* open the file and write the header */
-	FILE * fp = fopen(fname, "wb");
+	FILE * fp;
+	if (strlen(outfile) == 1 && outfile[0] == '-') {
+		/* write to stdout */
+		fp = stdout;
+	} else {
+		fp = fopen(outfile, "wb");
+	}
 
 	struct ff_header header = {
 		.magic = "farbfeld",
-		.width = htonl(xlen),
-		.height = htonl(xlen * ratio)
+		.width = htonl(settings.width),
+		.height = htonl(settings.height)
 	};
 
 	fwrite(&header, sizeof(struct ff_header), 1, fp);
@@ -89,7 +123,7 @@ int main(void) {
 	volatile uint32_t next_row = 0;
 	pthread_mutex_t row_mutex = PTHREAD_MUTEX_INITIALIZER;
 	pthread_t tids[threads],
-	          writer_tid; /* TODO: move to a writer thread */
+	          writer_tid;
 	struct thread_arg * arg;
 
 	/* setup the queue for the results */
@@ -152,6 +186,115 @@ int main(void) {
 	return 0;
 }
 
+static void parse_options(int argc, char ** argv, enum Fractal * fractal_type, uint32_t * threads, char ** mapfile, long double * ratio, uint32_t * width, uint64_t * iterations, long double * xlen_real, Point * image_centre, Point * julia_centre, char ** outfile) {
+	struct option long_options[] = {
+		/* put the long-only options first */
+		{ "image_centre", required_argument, NULL,  0  },
+		{ "julia_centre", required_argument, NULL,  0  },
+
+		/* now long and short args */
+		{ "fractal_type", required_argument, NULL, 'f' },
+		{ "threads",      required_argument, NULL, 't' },
+		{ "mapfile",      required_argument, NULL, 'm' },
+		{ "ratio",        required_argument, NULL, 'r' },
+		{ "width",        required_argument, NULL, 'w' },
+		{ "iterations",   required_argument, NULL, 'i' },
+		{ "xlen_real",    required_argument, NULL, 'x' },
+		{ "outfile",      required_argument, NULL, 'o' },
+		{ "help",         no_argument,       NULL, 'h' },
+		{ NULL,           0,                 NULL,  0  },
+	};
+
+	/* save the program name to pass to usage later */
+	char * program_name = argv[0];
+	int option_index = 0, c;
+
+  while ((c = getopt_long(argc, argv, "f:t:m:r:w:i:x:o:h", long_options, &option_index)) != -1) {
+		switch (c) {
+			case 0: /* long option */
+				printf("option %s", long_options[option_index].name);
+				if (optarg)
+					printf(" with arg %s", optarg);
+				printf("\n");
+
+				switch (option_index) {
+					case 0:
+						if (sscanf(optarg, "%Lf,%Lf", &image_centre->x, &image_centre->y) != 2) {
+							fprintf(stderr, "Failed to parse image_centre: %s\n", optarg);
+						}
+						break;
+					case 1:
+						if (sscanf(optarg, "%Lf,%Lf", &julia_centre->x, &julia_centre->y) != 2) {
+							fprintf(stderr, "Failed to parse julia_centre: %s\n", optarg);
+						}
+						break;
+				}
+				break;
+			case 'f':
+				if (strcasecmp("julia", optarg) == 0) {
+					/* render julia set */
+					*fractal_type = Julia;
+				} else if (strcasecmp("mandelbrot", optarg) == 0) {
+					/* render mandelbrot set */
+					*fractal_type = Mandelbrot;
+				} else {
+					fprintf(stderr, "Unsupported fractal type: %s\n", optarg);
+				}
+				break;
+			case 't':
+				printf("Got option t: %s\n", optarg);
+				if (sscanf(optarg, "%u", threads) != 1) {
+					fprintf(stderr, "Failed to parse threads: %s\n", optarg);
+				}
+				break;
+			case 'm':
+				printf("Got option m: %s\n", optarg);
+				*mapfile = optarg;
+				break;
+			case 'r':
+				printf("Got option r: %s\n", optarg);
+				if (sscanf(optarg, "%Lf", ratio) != 1) {
+					fprintf(stderr, "Failed to parse ratio: %s\n", optarg);
+				}
+				break;
+			case 'w':
+				printf("Got option w: %s\n", optarg);
+				if (sscanf(optarg, "%u", width) != 1) {
+					fprintf(stderr, "Failed to parse width: %s\n", optarg);
+				}
+				break;
+			case 'i':
+				printf("Got option i: %s\n", optarg);
+				if (sscanf(optarg, "%lu", iterations) != 1) {
+					fprintf(stderr, "Failed to parse width: %s\n", optarg);
+				}
+				break;
+			case 'x':
+				printf("Got option x: %s\n", optarg);
+				if (sscanf(optarg, "%Lf", xlen_real) != 1) {
+					fprintf(stderr, "Failed to parse xlen_real: %s\n", optarg);
+				}
+				break;
+			case 'o':
+				printf("Got option o: %s\n", optarg);
+				*outfile = optarg;
+				break;
+			case 'h':
+				printf("Got option h: %s\n", optarg);
+				usage(program_name);
+				exit(EXIT_SUCCESS);
+		}
+	}
+}
+
+static void usage(const char * program_name) {
+	puts("Usage:");
+	printf("  %s [options]\n\n", program_name);
+
+	puts("  -h, --help      show list of command-line options");
+	/* TODO: the rest of the help lol */
+}
+
 static void * rowrenderer(void * varg) {
 	/* colours the y'th row of the image.  */
 
@@ -178,9 +321,6 @@ static void * rowrenderer(void * varg) {
 	while (curr_row < settings->height) {
 		/* Allocate the space for the current row */
 		Pixel * row = malloc(settings->width * sizeof(Pixel));
-		if (errno == ENOMEM) {
-			printf("errno = %d\n", errno);
-		}
 
 		/* Colour each pixel in the row */
 		for (uint32_t x = 0; x < settings->width; x++) {
@@ -270,7 +410,7 @@ static void * writer_thread(void * varg) {
 	return NULL;
 }
 
-static void colour(uint32_t x, uint32_t y, Pixel * pixel, struct settings * settings) {
+static void colour(const uint32_t x, const uint32_t y, Pixel * pixel, const struct settings * settings) {
 	/*
 	 * colour the pixel with the values for the coordinate at x+iy
 	 *	z = a + bi, c = c + di
@@ -283,24 +423,24 @@ static void colour(uint32_t x, uint32_t y, Pixel * pixel, struct settings * sett
 		.alpha = UINT16_MAX
 	};
 
-  long double blx = settings->centre_x - settings->radius,
-              bly = settings->centre_y - (settings->radius * settings->ratio),
-              trx = settings->centre_x + settings->radius,
-              try = settings->centre_y + (settings->radius * settings->ratio),
-							c_x = settings->julia_x,
-							c_y = settings->julia_y;
+  long double blx = settings->bottom_left.x,
+              bly = settings->bottom_left.y,
+              trx = settings->top_right.x,
+              try = settings->top_right.y,
+              c_x = settings->julia_centre.x,
+              c_y = settings->julia_centre.y;
 
 
 	size_t i = 0;
-	long double c = blx + (x / (xlen / (trx-blx))),
-	            d = try - (y / ((xlen * ratio) / (try-bly))),
+	long double c = blx + (x / (settings->width / (trx-blx))),
+	            d = try - (y / ((settings->width * ratio) / (try-bly))),
 	            a = c,
 	            b = d,
 	            a2 = a * a,
 	            b2 = b * b,
 	            temp;
 
-	while ((i < iterations) && ((a2 + b2) < 4)) {
+	while ((i < settings->iterations) && ((a2 + b2) < 4)) {
 		i++;
 		temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 		b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
@@ -309,7 +449,7 @@ static void colour(uint32_t x, uint32_t y, Pixel * pixel, struct settings * sett
 		b2 = b * b;
 	}
 
-	if (i == iterations) {
+	if (i == settings->iterations) {
 		memcpy(pixel, &default_pixel, sizeof(Pixel));
 	} else {
 		memcpy(pixel, &settings->colourmap->colours[i % settings->colourmap->size], sizeof(Pixel));

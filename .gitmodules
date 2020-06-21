@@ -1,0 +1,3 @@
+[submodule "libcmap"]
+	path = libcmap
+	url = https://github.com/tritoke/libcmap.git
