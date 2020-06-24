@@ -107,7 +107,7 @@ int main(int argc, char * argv[]) {
 		/* write to stdout */
 		fp = stdout;
 	} else {
-		fp = fopen(outfile, "wb");
+		fp = fopen(outfile, "w");
 	}
 
 	struct ff_header header = {
@@ -186,7 +186,9 @@ int main(int argc, char * argv[]) {
 	return 0;
 }
 
-static void parse_options(int argc, char ** argv, enum Fractal * fractal_type, uint32_t * threads, char ** mapfile, long double * ratio, uint32_t * width, uint64_t * iterations, long double * xlen_real, Point * image_centre, Point * julia_centre, char ** outfile) {
+static void parse_options(int argc, char ** argv, enum Fractal * fractal_type, uint32_t * threads, char ** mapfile,
+												  long double * ratio, uint32_t * width, uint64_t * iterations, long double * xlen_real,
+													Point * image_centre, Point * julia_centre, char ** outfile) {
 	struct option long_options[] = {
 		/* put the long-only options first */
 		{ "image_centre", required_argument, NULL,  0  },
@@ -212,11 +214,6 @@ static void parse_options(int argc, char ** argv, enum Fractal * fractal_type, u
   while ((c = getopt_long(argc, argv, "f:t:m:r:w:i:x:o:h", long_options, &option_index)) != -1) {
 		switch (c) {
 			case 0: /* long option */
-				printf("option %s", long_options[option_index].name);
-				if (optarg)
-					printf(" with arg %s", optarg);
-				printf("\n");
-
 				switch (option_index) {
 					case 0:
 						if (sscanf(optarg, "%Lf,%Lf", &image_centre->x, &image_centre->y) != 2) {
@@ -242,45 +239,37 @@ static void parse_options(int argc, char ** argv, enum Fractal * fractal_type, u
 				}
 				break;
 			case 't':
-				printf("Got option t: %s\n", optarg);
 				if (sscanf(optarg, "%u", threads) != 1) {
 					fprintf(stderr, "Failed to parse threads: %s\n", optarg);
 				}
 				break;
 			case 'm':
-				printf("Got option m: %s\n", optarg);
 				*mapfile = optarg;
 				break;
 			case 'r':
-				printf("Got option r: %s\n", optarg);
 				if (sscanf(optarg, "%Lf", ratio) != 1) {
 					fprintf(stderr, "Failed to parse ratio: %s\n", optarg);
 				}
 				break;
 			case 'w':
-				printf("Got option w: %s\n", optarg);
 				if (sscanf(optarg, "%u", width) != 1) {
 					fprintf(stderr, "Failed to parse width: %s\n", optarg);
 				}
 				break;
 			case 'i':
-				printf("Got option i: %s\n", optarg);
 				if (sscanf(optarg, "%lu", iterations) != 1) {
 					fprintf(stderr, "Failed to parse width: %s\n", optarg);
 				}
 				break;
 			case 'x':
-				printf("Got option x: %s\n", optarg);
 				if (sscanf(optarg, "%Lf", xlen_real) != 1) {
 					fprintf(stderr, "Failed to parse xlen_real: %s\n", optarg);
 				}
 				break;
 			case 'o':
-				printf("Got option o: %s\n", optarg);
 				*outfile = optarg;
 				break;
 			case 'h':
-				printf("Got option h: %s\n", optarg);
 				usage(program_name);
 				exit(EXIT_SUCCESS);
 		}
@@ -409,6 +398,12 @@ static void * writer_thread(void * varg) {
 
 	return NULL;
 }
+
+/**
+ * TODO: new writer for writing to stdout - must search queue for the correct row before writing...
+ *       maybe use a different insertion function so that the queue is always sorted,
+ *       then we only need to check the head.
+ */
 
 static void colour(const uint32_t x, const uint32_t y, Pixel * pixel, const struct settings * settings) {
 	/*

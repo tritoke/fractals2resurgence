@@ -20,6 +20,6 @@ f2r: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
 clean:
-	rm -f f2r ${OBJ}
+	rm -f f2r ${OBJ} feh_*.ff
 
 .PHONY: all options clean

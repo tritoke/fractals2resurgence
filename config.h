@@ -26,7 +26,7 @@ uint32_t xlen = 4000;
 
 /* number of iterations to run for before declaring
  * a point part of the set */
-uint64_t iterations = 100000;
+uint64_t iterations = 1000;
 
 /* These options define the viewbox into which we render the mandelbrot set
  * e.g. the area of the "true" plot to be rendered */
