@@ -531,15 +531,16 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		   (256.0 * cdot * cdot - 96.0 * cdot + 32.0 * a - 3.0 >= 0.0)
 	  && (16.0 * (cdot + 2.0 * a + 1.0) - 1.0 >= 0.0)
 	);
-	if (settings->fractal_type == Julia || ((settings->fractal_type == Mandelbrot) && not_in_main_bulb)) {
-		while ((i < settings->iterations) && ((a2 + b2) < 4)) {
-			i++;
-			temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
-			b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
-			a = temp;
-			a2 = a * a;
-			b2 = b * b;
-		}
+	if (!not_in_main_bulb) { // wow look at that for loop go!!
+		i = settings->iterations;
+	}
+	while ((i < settings->iterations) && ((a2 + b2) < 4)) {
+		i++;
+		temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
+		b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
+		a = temp;
+		a2 = a * a;
+		b2 = b * b;
 	}
 
 	if (i == settings->iterations) {
