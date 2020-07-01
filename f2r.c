@@ -531,7 +531,7 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		   (256.0 * cdot * cdot - 96.0 * cdot + 32.0 * a - 3.0 >= 0.0)
 	  && (16.0 * (cdot + 2.0 * a + 1.0) - 1.0 >= 0.0)
 	);
-	if (!not_in_main_bulb) { // wow look at that for loop go!!
+	if (!not_in_main_bulb && settings->fractal_type == Mandelbrot) { // wow look at that for loop go!!
 		i = settings->iterations;
 	}
 	while ((i < settings->iterations) && ((a2 + b2) < 4)) {
