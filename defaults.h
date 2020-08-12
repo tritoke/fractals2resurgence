@@ -10,7 +10,7 @@ const enum Fractal fractal_type = Mandelbrot;
 const uint32_t threads = 24;
 
 /* the colourmap file to use */
-const char * mapfile = "libcmap/colourmaps/Skydye05.cmap";
+const char * const mapfile = "libcmap/colourmaps/Skydye05.cmap";
 /** dank:
  * damien3, Digiorg1, bud(2,4), droz(22,60)
  * glasses2, headache, Lindaa(02,04,06,09,10,16,17)
@@ -49,7 +49,7 @@ const Point image_centre = {
 const Point julia_centre = {-0.8, 0.156};
 
 /* file to write the final image to */
-const char * outfile = "out.ff";
+const char * const outfile = "out.ff";
 
 /* default to non-verbose */
 const bool verbose = false;

@@ -1,14 +1,17 @@
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/queue.h>
-#include <math.h>
 #include "cmap.h"
+
+/* little macro for printing booleans as strings */
+#define BOOL2STR(x) ((x) ? "true" : "false")
 
 /* enum representing the different types of fractals available */
 enum Fractal {Julia, Mandelbrot};
@@ -18,7 +21,7 @@ typedef struct {
 	double y;
 } Point;
 
-#include "config.h"
+#include "defaults.h"
 
 /* the settings used by threads to create the render */
 struct settings {
@@ -30,7 +33,6 @@ struct settings {
 	Point julia_centre;
 	enum Fractal fractal_type;
 	struct colourmap * colourmap;
-	bool sorted_queue_insert;
 	bool verbose;
 	bool smooth;
 };
@@ -51,26 +53,16 @@ struct user_options {
 	bool smooth;
 };
 
-STAILQ_HEAD(tailq_head, row);
-
 struct thread_arg {
-	uint32_t * next_row;
-	const struct settings * settings;
-	pthread_mutex_t * row_lock;
-	struct tailq_head * result_queue;
+	atomic_uint_fast32_t * const next_row;
+	Pixel ** rows;
+	const struct settings * const settings;
 };
 
 struct writer_arg {
-	const struct settings * settings;
-	pthread_mutex_t * row_lock;
-	struct tailq_head * result_queue;
+	const struct settings * const settings;
+	Pixel ** rows;
 	FILE * outfile;
-};
-
-struct row {
-	uint32_t y;
-	Pixel * pixels;
-	STAILQ_ENTRY(row) tail;
 };
 
 struct ff_header {
@@ -86,7 +78,16 @@ static void * writer_thread(void *);
 static void colour(const uint32_t, const uint32_t, Pixel *, const struct settings *);
 
 int main(int argc, char * argv[]) {
+	 /***********************************
+	 *   ____  _____ _____ _   _ ____   *
+	 *  / ___|| ____|_   _| | | |  _ \  *
+	 *  \___ \|  _|   | | | | | | |_) | *
+	 *   ___) | |___  | | | |_| |  __/  *
+	 *  |____/|_____| |_|  \___/|_|     *
+	 *                                  *
+	 ************************************/
 
+	/* set up the user options struct with the defaults from defaults.h */
 	struct user_options uo = {
 		.fractal_type = fractal_type,
 		.threads = threads,
@@ -120,15 +121,31 @@ int main(int argc, char * argv[]) {
 
 	/* open the file and write the header */
 	FILE * fp;
-	bool sorted_queue_insert = false;
 	if (strlen(uo.outfile) == 1 && uo.outfile[0] == '-') {
 		/* write to stdout */
 		fp = stdout;
-		sorted_queue_insert = true;
 	} else {
+		/* open the specified output file */
 		fp = fopen(outfile, "w");
 	}
 
+	/* if in verbose mode print the render settings to stderr */
+	if (uo.verbose) {
+		fprintf(stderr, "Render Settings:\n");
+		fprintf(stderr, "\tthreads: %d\n", uo.threads);
+		fprintf(stderr, "\twidth: %d\n", uo.width);
+		fprintf(stderr, "\theight: %d\n", (uint32_t) (uo.width * uo.ratio));
+		fprintf(stderr, "\titerations: %ld\n", uo.iterations);
+		fprintf(stderr, "\tbottom_left: %f,%f\n", bottom_left.x, bottom_left.y);
+		fprintf(stderr, "\ttop_right: %f,%f\n", top_right.x, top_right.y);
+		fprintf(stderr, "\tjulia_centre: %f,%f\n", uo.julia_centre.x, uo.julia_centre.y);
+		fprintf(stderr, "\tfractal_type: %d\n", uo.fractal_type);
+		fprintf(stderr, "\tcolourmap: %s\n", uo.mapfile);
+		fprintf(stderr, "\tverbose: %s\n", BOOL2STR(uo.verbose));
+		fprintf(stderr, "\tsmooth: %s\n", BOOL2STR(uo.smooth));
+	}
+
+	/* setup the actual settings passed to the renderer */
 	const struct settings settings = {
 		.width = uo.width,
 		.height = uo.width * uo.ratio,
@@ -140,8 +157,17 @@ int main(int argc, char * argv[]) {
 		.colourmap = read_map(uo.mapfile),
 		.verbose = uo.verbose,
 		.smooth = uo.smooth,
-		.sorted_queue_insert = sorted_queue_insert,
 	};
+
+	 /********************************
+	 * __        _____  ____  _  __  *
+	 * \ \      / / _ \|  _ \| |/ /  *
+	 *  \ \ /\ / / | | | |_) | ' /   *
+	 *   \ V  V /| |_| |  _ <| . \   *
+	 *    \_/\_/  \___/|_| \_\_|\_\  *
+	 *                               *
+	 ********************************/
+
 
 	const struct ff_header header = {
 		.magic = "farbfeld",
@@ -151,35 +177,28 @@ int main(int argc, char * argv[]) {
 
 	fwrite(&header, sizeof(struct ff_header), 1, fp);
 
-
 	/* setup for starting the threads */
-	uint32_t next_row = 0;
-	pthread_mutex_t row_mutex = PTHREAD_MUTEX_INITIALIZER;
-	pthread_t tids[threads],
+	atomic_uint_fast32_t next_row = 0;
+	pthread_t tids[uo.threads],
 	          writer_tid;
 
-	/* setup the queue for the results */
-	struct tailq_head head = STAILQ_HEAD_INITIALIZER(head);
-	STAILQ_INIT(&head);
-
 	/* set up the thread arguments */
+	Pixel ** rows = calloc(settings.height, sizeof(Pixel *)); /* free'd by writer_thread */
+
 	struct thread_arg targ = {
 		.next_row = &next_row,
 		.settings = &settings,
-		.row_lock = &row_mutex,
-		.result_queue = &head,
+		.rows = rows,
 	};
 
 	struct writer_arg warg = {
 		.settings = &settings,
-		.row_lock = &row_mutex,
-		.result_queue = &head,
+		.rows = rows,
 		.outfile = fp,
 	};
 
 	/* start the renderer threads */
-	for (uint32_t i = 0; i < threads; i++) {
-
+	for (uint32_t i = 0; i < uo.threads; i++) {
 		if (pthread_create(&tids[i], NULL, rowrenderer, &targ)) {
 			fprintf(stderr, "error creating thread %d\n", i);
 			exit(EXIT_FAILURE);
@@ -197,7 +216,7 @@ int main(int argc, char * argv[]) {
 	}
 
 	/* join render threads */
-	for (uint32_t i = 0; i < threads; i++) {
+	for (uint32_t i = 0; i < uo.threads; i++) {
 		if (pthread_join(tids[i], NULL)) {
 			fprintf(stderr, "failed to join thread %d\n", i);
 			exit(EXIT_FAILURE);
@@ -205,6 +224,15 @@ int main(int argc, char * argv[]) {
 			fprintf(stderr, "[thread]\t%d\tjoined\n", i);
 		}
 	}
+
+	/*****************************************************
+	*    _____ ___ _   _    _    _     ___ ____  _____   *
+	*   |  ___|_ _| \ | |  / \  | |   |_ _/ ___|| ____|  *
+	*   | |_   | ||  \| | / _ \ | |    | |\___ \|  _|    *
+	*   |  _|  | || |\  |/ ___ \| |___ | | ___) | |___   *
+	*   |_|   |___|_| \_/_/   \_\_____|___|____/|_____|  *
+	*                                                    *
+	*****************************************************/
 
 	/* join writer thread */
 	if (pthread_join(writer_tid, NULL)) {
@@ -348,88 +376,29 @@ static void usage(const char * program_name) {
 static void * rowrenderer(void * varg) {
 	/* colours the y'th row of the image.  */
 
-	const struct thread_arg * arg = (struct thread_arg *) varg;
-	const struct settings * settings = arg->settings;
+	const struct thread_arg * const arg = (struct thread_arg *) varg;
+	const struct settings * const settings = arg->settings;
+	Pixel ** rows = arg->rows;
 
 	uint32_t curr_row;
-	struct row * result;
-
-	/* Aqcuire the lock */
-	if (pthread_mutex_lock(arg->row_lock) != 0) {
-		fputs("[thread]\tfailed to acquire lock, exiting.", stderr);
-		exit(EXIT_FAILURE);
-	}
 
 	/* get the current row to render */
 	curr_row = (*arg->next_row)++;
 
-	/* release lock */
-	if (pthread_mutex_unlock(arg->row_lock) != 0) {
-		fputs("[thread]\tfailed to release lock, exiting.", stderr);
-		exit(EXIT_FAILURE);
-	}
-
 	while (curr_row < settings->height) {
 		/* Allocate the space for the current row */
-		Pixel * const row = malloc(settings->width * sizeof(Pixel));
+		Pixel * row = malloc(settings->width * sizeof(Pixel));
 
 		/* Colour each pixel in the row */
 		for (uint32_t x = 0; x < settings->width; x++) {
 			colour(x, curr_row, &row[x], settings);
 		}
 
-		/*
-		 * Acquire the lock, get the next row to be rendered
-		 * and add the current row to the queue
-		 */
-		if (pthread_mutex_lock(arg->row_lock) != 0) {
-			fputs("[thread]\tfailed to acquire lock, exiting.", stderr);
-			exit(EXIT_FAILURE);
-		}
-
-		/* Allocate result struct and add to queue */
-		result = calloc(1, sizeof(struct row));
-		result->y = curr_row;
-		result->pixels = row;
-
-		/* sorted queue input when necessary */
-		bool queued = false;
-		if (settings->sorted_queue_insert) {
-			struct row * queue_row;
-			struct row * prev = NULL;
-			STAILQ_FOREACH(queue_row, arg->result_queue, tail) {
-				/* our row goes before this one in the output queue */
-				if (queue_row->y > result->y) {
-					/* check prev is not NULL, if it is we insert at the head */
-					if (prev == NULL) {
-						STAILQ_INSERT_HEAD(arg->result_queue, result, tail);
-					} else {
-						/* place current after prev */
-						STAILQ_INSERT_AFTER(arg->result_queue, prev, result, tail);
-					}
-
-					/* assign to queued flag and break out of loop */
-					queued = true;
-					break;
-				}
-				prev = queue_row;
-			}
-		}
-
-		/* if we haven't queued anything, put it at the tail */
-		if (!queued) {
-			/* insert the result into the queue */
-			STAILQ_INSERT_TAIL(arg->result_queue, result, tail);
-		}
+		/* write the pointer to the row out to be written to disk */
+		rows[curr_row] = row;
 
 		/* Get the next row of the image to render */
 		curr_row = (*arg->next_row)++;
-
-		/* release lock */
-		if (pthread_mutex_unlock(arg->row_lock) != 0) {
-			fputs("[thread]\tfailed to release lock, exiting.", stderr);
-			exit(EXIT_FAILURE);
-		}
 	}
 
 	return NULL;
@@ -440,58 +409,27 @@ static void * writer_thread(void * varg) {
 
 	const struct writer_arg * arg = (struct writer_arg *) varg;
 	const struct settings * settings = arg->settings;
-	struct row * row = NULL;
 
 	uint32_t rows_written = 0;
-	const ssize_t rowsize = settings->width * sizeof(Pixel);
+	Pixel ** rows = arg->rows;
 
 	while (rows_written < settings->height) {
-		/* Aqcuire the lock */
-		if (pthread_mutex_lock(arg->row_lock) != 0) {
-			fputs("[thread]\tfailed to acquire lock, exiting.", stderr);
-			exit(EXIT_FAILURE);
-		}
+		/* continue until next row is ready */
+		Pixel * row = rows[rows_written];
+		if (row == NULL) continue;
 
-		/* get next item from queue */
-		bool correct_row = false;
-		if (!STAILQ_EMPTY(arg->result_queue)) {
-			row = STAILQ_FIRST(arg->result_queue);
+		/* write out the rows */
+		fwrite(row, sizeof(Pixel), settings->width, arg->outfile);
 
-			/* it writing to stdout we need to check the right row
-			 * is being written before writing it */
-			if (settings->sorted_queue_insert) {
-				/* this is the correct next row, dequeue it */
-				if (row->y == rows_written) {
-					STAILQ_REMOVE_HEAD(arg->result_queue, tail);
-					correct_row = true;
-				}
-			} else {
-				/* otherwise just dequeue it */
-				STAILQ_REMOVE_HEAD(arg->result_queue, tail);
-			}
-		}
+		/* free resources */
+		free(row);
 
-		/* release lock */
-		if (pthread_mutex_unlock(arg->row_lock) != 0) {
-			fputs("[thread]\tfailed to release lock, exiting.", stderr);
-			exit(EXIT_FAILURE);
-		}
-
-		/* Write the block to the right offset in the file */
-		if (row != NULL && (correct_row || !settings->sorted_queue_insert)) {
-			const long offset = sizeof(struct ff_header) + rowsize * row->y;
-			fseek(arg->outfile, offset, SEEK_SET);
-			fwrite(row->pixels, sizeof(Pixel), settings->width, arg->outfile);
-
-			/* Update state */
-			rows_written++;
-
-			/* free resources */
-			free(row->pixels);
-			free(row);
-			row = NULL;
-		}
+		/* Update state */
+		rows_written++;
 	}
+
+	/* free the space used to store the pointers to the rows */
+	free(rows);
 
 	return NULL;
 }

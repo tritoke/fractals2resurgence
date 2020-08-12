@@ -1,6 +1,6 @@
 include config.mk
 
-SRC = ${wildcard *.c}
+SRC = f2r.c
 OBJ = ${SRC:.c=.o}
 
 all: options f2r
@@ -14,7 +14,7 @@ options:
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-${OBJ}: config.h
+${OBJ}: defaults.h
 
 f2r: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
