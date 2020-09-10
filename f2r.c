@@ -61,8 +61,10 @@ struct thread_arg {
 
 struct writer_arg {
 	const struct settings * const settings;
+	atomic_uint_fast32_t * const next_row;
 	Pixel ** rows;
 	FILE * outfile;
+	bool in_order_write;
 };
 
 struct ff_header {
@@ -121,12 +123,14 @@ int main(int argc, char * argv[]) {
 
 	/* open the file and write the header */
 	FILE * fp;
+	bool in_order_write = false;
 	if (strlen(uo.outfile) == 1 && uo.outfile[0] == '-') {
 		/* write to stdout */
 		fp = stdout;
+		in_order_write = true;
 	} else {
 		/* open the specified output file */
-		fp = fopen(outfile, "w");
+		fp = fopen(uo.outfile, "w");
 	}
 
 	/* if in verbose mode print the render settings to stderr */
@@ -193,8 +197,10 @@ int main(int argc, char * argv[]) {
 
 	struct writer_arg warg = {
 		.settings = &settings,
+		.next_row = &next_row,
 		.rows = rows,
 		.outfile = fp,
+		.in_order_write = in_order_write,
 	};
 
 	/* start the renderer threads */
@@ -410,22 +416,57 @@ static void * writer_thread(void * varg) {
 	const struct writer_arg * arg = (struct writer_arg *) varg;
 	const struct settings * settings = arg->settings;
 
-	uint32_t rows_written = 0;
+	/* sentinel value for signalling a row has been written */
+	Pixel * const sentinel_value = (Pixel *) 0xDEADBEEFBEEFDEAD;
+
+	uint32_t min_unwritten_row = 0;
 	Pixel ** rows = arg->rows;
 
-	while (rows_written < settings->height) {
-		/* continue until next row is ready */
-		Pixel * row = rows[rows_written];
+	while (min_unwritten_row < settings->height) {
+		uint32_t row_to_write = min_unwritten_row;
+		/* search for rows to write */
+		Pixel * row = NULL;
+		if (arg->in_order_write) {
+			/* if we have to write in-order then we have to wait for the next row... */
+			row = rows[row_to_write];
+		} else {
+			/* if we can write in whatever order we want then we can search for unwritten rows */
+			const uint32_t limit = *arg->next_row;
+			for (; row_to_write < limit; row_to_write++) {
+				row = rows[row_to_write];
+
+				/* we wrote this already */
+				if (row == sentinel_value && row_to_write == min_unwritten_row) {
+					min_unwritten_row++;
+					continue;
+				}
+
+				/* there is a row ready here */
+				if (row != NULL && row != sentinel_value) break;
+			}
+		}
+
+		/* if there are no rows to write then just continue */
 		if (row == NULL) continue;
 
-		/* write out the rows */
+		/* if writing out of order - seek to the right place in the file first */
+		if (!arg->in_order_write)
+			fseek(arg->outfile, sizeof(struct ff_header) + row_to_write * (settings->width * sizeof(Pixel)), SEEK_SET);
+
+		/* write out the row */
 		fwrite(row, sizeof(Pixel), settings->width, arg->outfile);
 
-		/* free resources */
+		/* free the row */
 		free(row);
+		
+		/* write back sentinel value if we're writing out of order */
+		if (!arg->in_order_write)
+			rows[row_to_write] = sentinel_value;
 
 		/* Update state */
-		rows_written++;
+		if (row_to_write == min_unwritten_row) {
+			min_unwritten_row++;
+		}
 	}
 
 	/* free the space used to store the pointers to the rows */

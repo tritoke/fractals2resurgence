@@ -14,7 +14,7 @@ options:
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-${OBJ}: defaults.h
+${OBJ}: defaults.h config.mk
 
 f2r: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}

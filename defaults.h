@@ -31,10 +31,7 @@ const uint64_t iterations = 1000;
 /* These options define the viewbox into which we render the mandelbrot set
  * e.g. the area of the "true" plot to be rendered */
 const double xlen_real = 4;
-const Point image_centre = {
-	.x = 0.0,
-	.y = 0.0
-};
+const Point image_centre = { 0.0, 0.0 };
 
 /**
  * If rendering a julia set use this point as the value for c.
