@@ -131,6 +131,10 @@ int main(int argc, char * argv[]) {
 	} else {
 		/* open the specified output file */
 		fp = fopen(uo.outfile, "w");
+		if (fp == NULL) {
+			fprintf(stderr, "Failed to open outfile: \"%s\", exiting.", uo.outfile);
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	/* if in verbose mode print the render settings to stderr */
