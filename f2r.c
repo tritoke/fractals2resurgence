@@ -132,7 +132,7 @@ int main(int argc, char * argv[]) {
 		/* open the specified output file */
 		fp = fopen(uo.outfile, "w");
 		if (fp == NULL) {
-			fprintf(stderr, "Failed to open outfile: \"%s\", exiting.", uo.outfile);
+			fprintf(stderr, "Failed to open outfile: \"%s\", exiting.\n", uo.outfile);
 			exit(EXIT_FAILURE);
 		}
 	}
