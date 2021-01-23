@@ -14,9 +14,9 @@ options:
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-${OBJ}: defaults.h config.mk
+${OBJ}: defaults.h config.mk ${CMAPINC}/cmap.h
 
-f2r: ${OBJ}
+f2r: ${OBJ} ${CMAPINC}/libcmap.a
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
 clean:

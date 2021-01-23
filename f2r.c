@@ -252,14 +252,10 @@ int main(int argc, char * argv[]) {
 		fputs("[writer]\t\tjoined\n", stderr);
 	}
 
-	if (settings.verbose) {
-		fputs("[main]\t\tfreeing colourmap\n", stderr);
-	}
+	if (settings.verbose) fputs("[main]\t\tfreeing colourmap\n", stderr);
 	free_cmap(settings.colourmap);
 
-	if (settings.verbose) {
-		fputs("[main]\t\tclosing file\n", stderr);
-	}
+	if (settings.verbose) fputs("[main]\t\tclosing file\n", stderr);
 	fclose(fp);
 
 	return 0;
@@ -533,6 +529,7 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 
 		/* iterate z 3 more times to get smoother colouring */
 		for (int j = 0; j < 3; j++) {
+			i++;
 			temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 			b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
 			a = temp;
@@ -553,19 +550,13 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		colour_one %= settings->colourmap->size;
 		size_t colour_two = (colour_one + 1) % settings->colourmap->size;
 
+		Pixel c1 = settings->colourmap->colours[colour_one];
+		Pixel c2 = settings->colourmap->colours[colour_two];
+
 		Pixel colour = {
-			.red = (
-				settings->colourmap->colours[colour_one].red * t1
-			+ settings->colourmap->colours[colour_two].red * t2
-			),
-			.green = (
-				settings->colourmap->colours[colour_one].green * t1
-			+ settings->colourmap->colours[colour_two].green * t2
-			),
-			.blue = (
-				settings->colourmap->colours[colour_one].blue * t1
-			+ settings->colourmap->colours[colour_two].blue * t2
-			),
+			.red   = c1.red   * t1 + c2.red   * t2,
+			.green = c1.green * t1 + c2.green * t2,
+			.blue  = c1.blue  * t1 + c2.blue  * t2,
 			.alpha = UINT16_MAX,
 		};
 
