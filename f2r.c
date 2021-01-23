@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +57,7 @@ struct user_options {
 struct thread_arg {
 	atomic_uint_fast32_t * const next_row;
 	Pixel ** rows;
+	pthread_mutex_t * const row_mtx;
 	const struct settings * const settings;
 };
 
@@ -63,6 +65,7 @@ struct writer_arg {
 	const struct settings * const settings;
 	atomic_uint_fast32_t * const next_row;
 	Pixel ** rows;
+	pthread_mutex_t * const row_mtx;
 	FILE * outfile;
 	bool in_order_write;
 };
@@ -78,6 +81,7 @@ static void usage(const char *);
 static void * rowrenderer(void *);
 static void * writer_thread(void *);
 static void colour(const uint32_t, const uint32_t, Pixel *, const struct settings *);
+static void die(const char *, ...);
 
 int main(int argc, char * argv[]) {
 	 /***********************************
@@ -131,10 +135,7 @@ int main(int argc, char * argv[]) {
 	} else {
 		/* open the specified output file */
 		fp = fopen(uo.outfile, "w");
-		if (fp == NULL) {
-			fprintf(stderr, "Failed to open outfile: \"%s\", exiting.\n", uo.outfile);
-			exit(EXIT_FAILURE);
-		}
+		if (fp == NULL) die("Failed to open outfile: \"%s\", exiting.\n", uo.outfile);
 	}
 
 	/* if in verbose mode print the render settings to stderr */
@@ -191,18 +192,21 @@ int main(int argc, char * argv[]) {
 	          writer_tid;
 
 	/* set up the thread arguments */
-	Pixel ** rows = calloc(settings.height, sizeof(Pixel *)); /* free'd by writer_thread */
+	Pixel ** rows = calloc(settings.height, sizeof(Pixel *)); /* free'd by writer_thread on exit */
+	pthread_mutex_t row_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 	struct thread_arg targ = {
 		.next_row = &next_row,
 		.settings = &settings,
 		.rows = rows,
+		.row_mtx = &row_mtx,
 	};
 
 	struct writer_arg warg = {
 		.settings = &settings,
 		.next_row = &next_row,
 		.rows = rows,
+		.row_mtx = &row_mtx,
 		.outfile = fp,
 		.in_order_write = in_order_write,
 	};
@@ -210,8 +214,7 @@ int main(int argc, char * argv[]) {
 	/* start the renderer threads */
 	for (uint32_t i = 0; i < uo.threads; i++) {
 		if (pthread_create(&tids[i], NULL, rowrenderer, &targ)) {
-			fprintf(stderr, "error creating thread %d\n", i);
-			exit(EXIT_FAILURE);
+			die("error creating thread %d\n", i);
 		} else if (settings.verbose) {
 			fprintf(stderr, "[thread]\t%d\tcreated\n", i);
 		}
@@ -219,8 +222,7 @@ int main(int argc, char * argv[]) {
 
 	/* Start the writer thread */
 	if (pthread_create(&writer_tid, NULL, writer_thread, &warg)) {
-		fputs("error creating writer thread\n", stderr);
-		exit(EXIT_FAILURE);
+		die("Error creating writer thread\n")
 	} else if (settings.verbose) {
 		fputs("[writer]\t\tcreated\n", stderr);
 	}
@@ -228,8 +230,7 @@ int main(int argc, char * argv[]) {
 	/* join render threads */
 	for (uint32_t i = 0; i < uo.threads; i++) {
 		if (pthread_join(tids[i], NULL)) {
-			fprintf(stderr, "failed to join thread %d\n", i);
-			exit(EXIT_FAILURE);
+			die("failed to join thread %d\n", i);
 		} else if (settings.verbose) {
 			fprintf(stderr, "[thread]\t%d\tjoined\n", i);
 		}
@@ -246,8 +247,7 @@ int main(int argc, char * argv[]) {
 
 	/* join writer thread */
 	if (pthread_join(writer_tid, NULL)) {
-		fputs("failed to join writer thread\n", stderr);
-		exit(EXIT_FAILURE);
+		die("Failed to join writer thread\n");
 	} else if (settings.verbose) {
 		fputs("[writer]\t\tjoined\n", stderr);
 	}
@@ -401,7 +401,11 @@ static void * rowrenderer(void * varg) {
 		}
 
 		/* write the pointer to the row out to be written to disk */
+		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
+		
 		rows[curr_row] = row;
+
+		if (pthread_mutex_unlock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
 
 		/* Get the next row of the image to render */
 		curr_row = (*arg->next_row)++;
@@ -426,6 +430,9 @@ static void * writer_thread(void * varg) {
 		uint32_t row_to_write = min_unwritten_row;
 		/* search for rows to write */
 		Pixel * row = NULL;
+
+		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
+
 		if (arg->in_order_write) {
 			/* if we have to write in-order then we have to wait for the next row... */
 			row = rows[row_to_write];
@@ -446,6 +453,8 @@ static void * writer_thread(void * varg) {
 			}
 		}
 
+		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
+
 		/* if there are no rows to write then just continue */
 		if (row == NULL) continue;
 
@@ -460,8 +469,12 @@ static void * writer_thread(void * varg) {
 		free(row);
 		
 		/* write back sentinel value if we're writing out of order */
+		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
+
 		if (!arg->in_order_write)
 			rows[row_to_write] = sentinel_value;
+
+		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
 
 		/* Update state */
 		if (row_to_write == min_unwritten_row) {
@@ -564,4 +577,15 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 	} else {
 		memcpy(pixel, &settings->colourmap->colours[i % settings->colourmap->size], sizeof(Pixel));
 	}
+}
+
+static void die(const char * fmt, ...) {
+	va_list vargs;
+	va_start(vargs, fmt);
+
+	vfprintf(stderr, fmt, vargs);
+
+	va_end(vargs);
+
+	exit(EXIT_FAILURE);
 }
