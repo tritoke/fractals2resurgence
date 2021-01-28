@@ -222,7 +222,7 @@ int main(int argc, char * argv[]) {
 
 	/* Start the writer thread */
 	if (pthread_create(&writer_tid, NULL, writer_thread, &warg)) {
-		die("Error creating writer thread\n")
+		die("Error creating writer thread\n");
 	} else if (settings.verbose) {
 		fputs("[writer]\t\tcreated\n", stderr);
 	}
