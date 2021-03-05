@@ -82,6 +82,7 @@ static void * rowrenderer(void *);
 static void * writer_thread(void *);
 static void colour(const uint32_t, const uint32_t, Pixel *, const struct settings *);
 static void die(const char *, ...);
+static uint32_t min(const uint32_t, const uint32_t);
 
 int main(int argc, char * argv[]) {
 	 /***********************************
@@ -176,7 +177,6 @@ int main(int argc, char * argv[]) {
 	 *    \_/\_/  \___/|_| \_\_|\_\  *
 	 *                               *
 	 ********************************/
-
 
 	const struct ff_header header = {
 		.magic = "farbfeld",
@@ -438,7 +438,7 @@ static void * writer_thread(void * varg) {
 			row = rows[row_to_write];
 		} else {
 			/* if we can write in whatever order we want then we can search for unwritten rows */
-			const uint32_t limit = *arg->next_row;
+			const uint32_t limit = min(*arg->next_row, settings->height);
 			for (; row_to_write < limit; row_to_write++) {
 				row = rows[row_to_write];
 
@@ -453,10 +453,10 @@ static void * writer_thread(void * varg) {
 			}
 		}
 
-		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
+		if (pthread_mutex_unlock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
 
 		/* if there are no rows to write then just continue */
-		if (row == NULL) continue;
+		if (row == NULL || row == sentinel_value) continue;
 
 		/* if writing out of order - seek to the right place in the file first */
 		if (!arg->in_order_write)
@@ -469,12 +469,8 @@ static void * writer_thread(void * varg) {
 		free(row);
 		
 		/* write back sentinel value if we're writing out of order */
-		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
-
-		if (!arg->in_order_write)
+		if (!arg->in_order_write) // no need for mutex here because no other thread will access this address again
 			rows[row_to_write] = sentinel_value;
-
-		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
 
 		/* Update state */
 		if (row_to_write == min_unwritten_row) {
@@ -486,6 +482,11 @@ static void * writer_thread(void * varg) {
 	free(rows);
 
 	return NULL;
+}
+
+// takes a number in 0..n and maps it onto the range [a, b]
+static inline double distribute(const uint32_t i, const uint32_t n, const double a, const double b) {
+    return a + ((double) i / ((double) n / (b - a)));
 }
 
 static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, const struct settings * settings) {
@@ -508,29 +509,26 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 	       c_x = settings->julia_centre.x,
 	       c_y = settings->julia_centre.y;
 
-
 	size_t i = 0;
-	double c = blx + (x / (settings->width / (trx-blx))),
-	       d = try - (y / ((settings->width * ratio) / (try-bly))),
+	double c = distribute(x, settings->width, blx, trx),
+	       d = distribute(y, settings->height, try, bly),
 	       a = c,
 	       b = d,
 	       a2 = a * a,
-	       b2 = b * b,
-	       temp;
+	       b2 = b * b;
 
-	double cdot = a2 + b2;
-	bool not_in_main_bulb = (
+	//double cdot = a2 + b2;
+	bool not_in_main_bulb = true; /*(
 		   (256.0 * cdot * cdot - 96.0 * cdot + 32.0 * a - 3.0 >= 0.0)
 	  && (16.0 * (cdot + 2.0 * a + 1.0) - 1.0 >= 0.0)
-	);
+	); */
 	if (!not_in_main_bulb && settings->fractal_type == Mandelbrot) { // wow look at that for loop go!!
 		i = settings->iterations;
 	}
 	while ((i < settings->iterations) && ((a2 + b2) < 4)) {
 		i++;
-		temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 		b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
-		a = temp;
+		a = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 		a2 = a * a;
 		b2 = b * b;
 	}
@@ -543,9 +541,8 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		/* iterate z 3 more times to get smoother colouring */
 		for (int j = 0; j < 3; j++) {
 			i++;
-			temp = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 			b = ((a + a) * b) + (settings->fractal_type == Julia ? c_y : d);
-			a = temp;
+			a = a2 - b2 + (settings->fractal_type == Julia ? c_x : c);
 			a2 = a * a;
 			b2 = b * b;
 		}
@@ -588,4 +585,12 @@ static void die(const char * fmt, ...) {
 	va_end(vargs);
 
 	exit(EXIT_FAILURE);
+}
+
+static uint32_t min(const uint32_t a, const uint32_t b) {
+	if (a < b) {
+		return a;
+	} else {
+		return b;
+	}
 }
