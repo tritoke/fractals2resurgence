@@ -1,21 +1,24 @@
+#include "cmap.h"
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "cmap.h"
 
 /* little macro for printing booleans as strings */
 #define BOOL2STR(x) ((x) ? "true" : "false")
 
 /* enum representing the different types of fractals available */
-enum Fractal {Julia, Mandelbrot};
+enum Fractal {
+	Julia,
+	Mandelbrot,
+};
 
 typedef struct {
 	double x;
@@ -33,7 +36,7 @@ struct settings {
 	Point top_right;
 	Point julia_centre;
 	enum Fractal fractal_type;
-	struct colourmap * colourmap;
+	struct colourmap* colourmap;
 	bool verbose;
 	bool smooth;
 };
@@ -42,32 +45,44 @@ struct settings {
 struct user_options {
 	enum Fractal fractal_type;
 	uint32_t threads;
-	const char * mapfile;
+	const char* mapfile;
 	double ratio;
 	uint32_t width;
 	uint64_t iterations;
 	double xlen_real;
 	Point image_centre;
 	Point julia_centre;
-	const char * outfile;
+	const char* outfile;
 	bool verbose;
 	bool smooth;
 };
 
+enum row_write_state {
+	// no row has been written to this index yet
+	Empty = 0,
+	// a valid row has been written here but not to disk
+	Created,
+	// The row has been written out to disk
+	Written,
+};
+
+// The state needed to render rows
 struct thread_arg {
-	atomic_uint_fast32_t * const next_row;
-	Pixel ** rows;
-	pthread_mutex_t * const row_mtx;
-	const struct settings * const settings;
+	Pixel** rows;
+	_Atomic enum row_write_state* const row_states;
+	atomic_uint_fast32_t* const next_row;
+	atomic_uint_fast32_t* const rows_to_write;
+	const struct settings* const settings;
 };
 
 struct writer_arg {
-	const struct settings * const settings;
-	atomic_uint_fast32_t * const next_row;
-	Pixel ** rows;
-	pthread_mutex_t * const row_mtx;
-	FILE * outfile;
+	// the file to write the image data to
+	FILE* outfile;
+	// whether we need to write out lines in order (writing to stdout)
 	bool in_order_write;
+
+	// state is shared with the writer thread
+	struct thread_arg* const targ;
 };
 
 struct ff_header {
@@ -76,23 +91,23 @@ struct ff_header {
 	uint32_t height;
 };
 
-static void parse_options(int, char **, struct user_options *);
-static void usage(const char *);
-static void * rowrenderer(void *);
-static void * writer_thread(void *);
-static void colour(const uint32_t, const uint32_t, Pixel *, const struct settings *);
-static void die(const char *, ...);
+static void parse_options(int, char**, struct user_options*);
+static void usage(const char*);
+static void* rowrenderer(void*);
+static void* writer_thread(void*);
+static void colour(const uint32_t, const uint32_t, Pixel*, const struct settings*);
+static void die(const char*, ...);
 static uint32_t min(const uint32_t, const uint32_t);
 
-int main(int argc, char * argv[]) {
-	 /***********************************
-	 *   ____  _____ _____ _   _ ____   *
-	 *  / ___|| ____|_   _| | | |  _ \  *
-	 *  \___ \|  _|   | | | | | | |_) | *
-	 *   ___) | |___  | | | |_| |  __/  *
-	 *  |____/|_____| |_|  \___/|_|     *
-	 *                                  *
-	 ************************************/
+int main(int argc, char* argv[]) {
+	/***********************************
+	*   ____  _____ _____ _   _ ____   *
+	*  / ___|| ____|_   _| | | |  _ \  *
+	*  \___ \|  _|   | | | | | | |_) | *
+	*   ___) | |___  | | | |_| |  __/  *
+	*  |____/|_____| |_|  \___/|_|     *
+	*                                  *
+	************************************/
 
 	/* set up the user options struct with the defaults from defaults.h */
 	struct user_options uo = {
@@ -127,7 +142,7 @@ int main(int argc, char * argv[]) {
 	};
 
 	/* open the file and write the header */
-	FILE * fp;
+	FILE* fp;
 	bool in_order_write = false;
 	if (strlen(uo.outfile) == 1 && uo.outfile[0] == '-') {
 		/* write to stdout */
@@ -136,7 +151,8 @@ int main(int argc, char * argv[]) {
 	} else {
 		/* open the specified output file */
 		fp = fopen(uo.outfile, "w");
-		if (fp == NULL) die("Failed to open outfile: \"%s\", exiting.\n", uo.outfile);
+		if (fp == NULL)
+			die("Failed to open outfile: \"%s\", exiting.\n", uo.outfile);
 	}
 
 	/* if in verbose mode print the render settings to stderr */
@@ -144,7 +160,7 @@ int main(int argc, char * argv[]) {
 		fprintf(stderr, "Render Settings:\n");
 		fprintf(stderr, "\tthreads: %d\n", uo.threads);
 		fprintf(stderr, "\twidth: %d\n", uo.width);
-		fprintf(stderr, "\theight: %d\n", (uint32_t) (uo.width * uo.ratio));
+		fprintf(stderr, "\theight: %d\n", (uint32_t)(uo.width * uo.ratio));
 		fprintf(stderr, "\titerations: %ld\n", uo.iterations);
 		fprintf(stderr, "\tbottom_left: %f,%f\n", bottom_left.x, bottom_left.y);
 		fprintf(stderr, "\ttop_right: %f,%f\n", top_right.x, top_right.y);
@@ -169,7 +185,7 @@ int main(int argc, char * argv[]) {
 		.smooth = uo.smooth,
 	};
 
-	 /********************************
+	/********************************
 	 * __        _____  ____  _  __  *
 	 * \ \      / / _ \|  _ \| |/ /  *
 	 *  \ \ /\ / / | | | |_) | ' /   *
@@ -178,37 +194,29 @@ int main(int argc, char * argv[]) {
 	 *                               *
 	 ********************************/
 
-	const struct ff_header header = {
-		.magic = "farbfeld",
-		.width = htonl(settings.width),
-		.height = htonl(settings.height)
-	};
-
-	fwrite(&header, sizeof(struct ff_header), 1, fp);
-
 	/* setup for starting the threads */
 	atomic_uint_fast32_t next_row = 0;
-	pthread_t tids[uo.threads],
-	          writer_tid;
+	atomic_uint_fast32_t rows_to_write = 0;
+	pthread_t tids[uo.threads], writer_tid;
 
 	/* set up the thread arguments */
-	Pixel ** rows = calloc(settings.height, sizeof(Pixel *)); /* free'd by writer_thread on exit */
-	pthread_mutex_t row_mtx = PTHREAD_MUTEX_INITIALIZER;
+	/* both free'd by writer_thread on exit */
+	Pixel** rows = calloc(settings.height, sizeof(Pixel*));
+	_Atomic enum row_write_state* row_states = calloc(settings.height, sizeof(_Atomic enum row_write_state));
 
+	// setup the thread argument
 	struct thread_arg targ = {
-		.next_row = &next_row,
-		.settings = &settings,
 		.rows = rows,
-		.row_mtx = &row_mtx,
+		.row_states = row_states,
+		.next_row = &next_row,
+		.rows_to_write = &rows_to_write,
+		.settings = &settings,
 	};
 
 	struct writer_arg warg = {
-		.settings = &settings,
-		.next_row = &next_row,
-		.rows = rows,
-		.row_mtx = &row_mtx,
 		.outfile = fp,
 		.in_order_write = in_order_write,
+		.targ = &targ,
 	};
 
 	/* start the renderer threads */
@@ -252,112 +260,114 @@ int main(int argc, char * argv[]) {
 		fputs("[writer]\t\tjoined\n", stderr);
 	}
 
-	if (settings.verbose) fputs("[main]\t\tfreeing colourmap\n", stderr);
+	if (settings.verbose)
+		fputs("[main]\t\tfreeing colourmap\n", stderr);
 	free_cmap(settings.colourmap);
 
-	if (settings.verbose) fputs("[main]\t\tclosing file\n", stderr);
+	if (settings.verbose)
+		fputs("[main]\t\tclosing file\n", stderr);
 	fclose(fp);
 
 	return 0;
 }
 
-static void parse_options(int argc, char ** argv, struct user_options * uo) {
+static void parse_options(int argc, char** argv, struct user_options* uo) {
 	const struct option long_options[] = {
 		/* put the long-only options first */
-		{ "image_centre", required_argument, NULL,  0  },
-		{ "julia_centre", required_argument, NULL,  0  },
+		{ "image_centre", required_argument, NULL, 0 },
+		{ "julia_centre", required_argument, NULL, 0 },
 
 		/* now long and short args */
 		{ "fractal_type", required_argument, NULL, 'f' },
-		{ "threads",      required_argument, NULL, 't' },
-		{ "mapfile",      required_argument, NULL, 'm' },
-		{ "ratio",        required_argument, NULL, 'r' },
-		{ "width",        required_argument, NULL, 'w' },
-		{ "iterations",   required_argument, NULL, 'i' },
-		{ "xlen_real",    required_argument, NULL, 'x' },
-		{ "outfile",      required_argument, NULL, 'o' },
-		{ "help",         no_argument,       NULL, 'h' },
-		{ "verbose",      no_argument,       NULL, 'v' },
-		{ "smooth",       no_argument,       NULL, 's' },
-		{ NULL,           0,                 NULL,  0  },
+		{ "threads", required_argument, NULL, 't' },
+		{ "mapfile", required_argument, NULL, 'm' },
+		{ "ratio", required_argument, NULL, 'r' },
+		{ "width", required_argument, NULL, 'w' },
+		{ "iterations", required_argument, NULL, 'i' },
+		{ "xlen_real", required_argument, NULL, 'x' },
+		{ "outfile", required_argument, NULL, 'o' },
+		{ "help", no_argument, NULL, 'h' },
+		{ "verbose", no_argument, NULL, 'v' },
+		{ "smooth", no_argument, NULL, 's' },
+		{ NULL, 0, NULL, 0 },
 	};
 
 	/* save the program name to pass to usage later */
-	const char * program_name = argv[0];
+	const char* program_name = argv[0];
 	int option_index = 0, c;
 
-  while ((c = getopt_long(argc, argv, "f:t:m:r:w:i:x:o:hsv", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, "f:t:m:r:w:i:x:o:hsv", long_options, &option_index)) != -1) {
 		switch (c) {
-			case 0: /* long option */
-				switch (option_index) {
-					case 0:
-						if (sscanf(optarg, "%lf,%lf", &uo->image_centre.x, &uo->image_centre.y) != 2) {
-							fprintf(stderr, "Failed to parse image_centre: %s\n", optarg);
-						}
-						break;
-					case 1:
-						if (sscanf(optarg, "%lf,%lf", &uo->julia_centre.x, &uo->julia_centre.y) != 2) {
-							fprintf(stderr, "Failed to parse julia_centre: %s\n", optarg);
-						}
-						break;
+		case 0: /* long option */
+			switch (option_index) {
+			case 0:
+				if (sscanf(optarg, "%lf,%lf", &uo->image_centre.x, &uo->image_centre.y) != 2) {
+					fprintf(stderr, "Failed to parse image_centre: %s\n", optarg);
 				}
 				break;
-			case 'f':
-				if (strcasecmp("julia", optarg) == 0) {
-					/* render julia set */
-					uo->fractal_type = Julia;
-				} else if (strcasecmp("mandelbrot", optarg) == 0) {
-					/* render mandelbrot set */
-					uo->fractal_type = Mandelbrot;
-				} else {
-					fprintf(stderr, "Unsupported fractal type: %s\n", optarg);
+			case 1:
+				if (sscanf(optarg, "%lf,%lf", &uo->julia_centre.x, &uo->julia_centre.y) != 2) {
+					fprintf(stderr, "Failed to parse julia_centre: %s\n", optarg);
 				}
 				break;
-			case 't':
-				if (sscanf(optarg, "%u", &uo->threads) != 1) {
-					fprintf(stderr, "Failed to parse threads: %s\n", optarg);
-				}
-				break;
-			case 'm':
-				uo->mapfile = optarg;
-				break;
-			case 'r':
-				if (sscanf(optarg, "%lf", &uo->ratio) != 1) {
-					fprintf(stderr, "Failed to parse ratio: %s\n", optarg);
-				}
-				break;
-			case 'w':
-				if (sscanf(optarg, "%u", &uo->width) != 1) {
-					fprintf(stderr, "Failed to parse width: %s\n", optarg);
-				}
-				break;
-			case 'i':
-				if (sscanf(optarg, "%lu", &uo->iterations) != 1) {
-					fprintf(stderr, "Failed to parse width: %s\n", optarg);
-				}
-				break;
-			case 'x':
-				if (sscanf(optarg, "%lf", &uo->xlen_real) != 1) {
-					fprintf(stderr, "Failed to parse xlen_real: %s\n", optarg);
-				}
-				break;
-			case 'o':
-				uo->outfile = optarg;
-				break;
-			case 'h':
-				usage(program_name);
-				exit(EXIT_SUCCESS);
-			case 'v':
-				uo->verbose = true;
-				break;
-			case 's':
-				uo->smooth = true;
-				break;
+			}
+			break;
+		case 'f':
+			if (strcasecmp("julia", optarg) == 0) {
+				/* render julia set */
+				uo->fractal_type = Julia;
+			} else if (strcasecmp("mandelbrot", optarg) == 0) {
+				/* render mandelbrot set */
+				uo->fractal_type = Mandelbrot;
+			} else {
+				fprintf(stderr, "Unsupported fractal type: %s\n", optarg);
+			}
+			break;
+		case 't':
+			if (sscanf(optarg, "%u", &uo->threads) != 1) {
+				fprintf(stderr, "Failed to parse threads: %s\n", optarg);
+			}
+			break;
+		case 'm':
+			uo->mapfile = optarg;
+			break;
+		case 'r':
+			if (sscanf(optarg, "%lf", &uo->ratio) != 1) {
+				fprintf(stderr, "Failed to parse ratio: %s\n", optarg);
+			}
+			break;
+		case 'w':
+			if (sscanf(optarg, "%u", &uo->width) != 1) {
+				fprintf(stderr, "Failed to parse width: %s\n", optarg);
+			}
+			break;
+		case 'i':
+			if (sscanf(optarg, "%lu", &uo->iterations) != 1) {
+				fprintf(stderr, "Failed to parse width: %s\n", optarg);
+			}
+			break;
+		case 'x':
+			if (sscanf(optarg, "%lf", &uo->xlen_real) != 1) {
+				fprintf(stderr, "Failed to parse xlen_real: %s\n", optarg);
+			}
+			break;
+		case 'o':
+			uo->outfile = optarg;
+			break;
+		case 'h':
+			usage(program_name);
+			exit(EXIT_SUCCESS);
+		case 'v':
+			uo->verbose = true;
+			break;
+		case 's':
+			uo->smooth = true;
+			break;
 		}
 	}
 }
 
-static void usage(const char * program_name) {
+static void usage(const char* program_name) {
 	puts("Usage:");
 	printf("  %s [options]\n", program_name);
 	puts("");
@@ -379,12 +389,11 @@ static void usage(const char * program_name) {
 	puts("                       NOTE: takes 2 doubles x,y with NO SPACE between");
 }
 
-static void * rowrenderer(void * varg) {
+static void* rowrenderer(void* varg) {
 	/* colours the y'th row of the image.  */
-
-	const struct thread_arg * const arg = (struct thread_arg *) varg;
-	const struct settings * const settings = arg->settings;
-	Pixel ** rows = arg->rows;
+	const struct thread_arg* const arg = (struct thread_arg*)varg;
+	const struct settings* const settings = arg->settings;
+	Pixel** rows = arg->rows;
 
 	uint32_t curr_row;
 
@@ -393,7 +402,7 @@ static void * rowrenderer(void * varg) {
 
 	while (curr_row < settings->height) {
 		/* Allocate the space for the current row */
-		Pixel * row = malloc(settings->width * sizeof(Pixel));
+		Pixel* row = malloc(settings->width * sizeof(Pixel));
 
 		/* Colour each pixel in the row */
 		for (uint32_t x = 0; x < settings->width; x++) {
@@ -401,11 +410,13 @@ static void * rowrenderer(void * varg) {
 		}
 
 		/* write the pointer to the row out to be written to disk */
-		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
-		
 		rows[curr_row] = row;
 
-		if (pthread_mutex_unlock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
+		/* now store Created to this index of row_states */
+		atomic_store(&arg->row_states[curr_row], Created);
+
+		/* tell the writer thread that there is one more row ready to be written */
+		atomic_fetch_add(arg->rows_to_write, 1);
 
 		/* Get the next row of the image to render */
 		curr_row = (*arg->next_row)++;
@@ -414,63 +425,102 @@ static void * rowrenderer(void * varg) {
 	return NULL;
 }
 
-static void * writer_thread(void * varg) {
-	/* Takes rows from the result queue and writes them out */
+static void* writer_thread(void* varg) {
+	const struct writer_arg* arg = (struct writer_arg*)varg;
+	const struct thread_arg* targ = arg->targ;
+	const struct settings* settings = targ->settings;
 
-	const struct writer_arg * arg = (struct writer_arg *) varg;
-	const struct settings * settings = arg->settings;
+	// construct the header and write it out
+	const struct ff_header header = {
+		.magic = "farbfeld",
+		.width = htonl(settings->width),
+		.height = htonl(settings->height)
+	};
+
+	fwrite(&header, sizeof(struct ff_header), 1, arg->outfile);
 
 	/* sentinel value for signalling a row has been written */
-	Pixel * const sentinel_value = (Pixel *) 0xDEADBEEFBEEFDEAD;
+	//Pixel* const sentinel_value = (Pixel*)0xDEADBEEFBEEFDEAD;
 
 	uint32_t min_unwritten_row = 0;
-	Pixel ** rows = arg->rows;
+	uint32_t row_to_write;
+	Pixel** rows = targ->rows;
+	Pixel* row;
 
 	while (min_unwritten_row < settings->height) {
-		uint32_t row_to_write = min_unwritten_row;
+		row_to_write = min_unwritten_row;
+		row = NULL;
+
+		/* check if we actually have any rows to write */
+		if (atomic_load(targ->rows_to_write) == 0) {
+			// otherwise just spin-loop
+			continue;
+		}
+
 		/* search for rows to write */
-		Pixel * row = NULL;
-
-		if (pthread_mutex_lock(arg->row_mtx) != 0) die("Failed to acquire row mutex, exiting");
-
 		if (arg->in_order_write) {
 			/* if we have to write in-order then we have to wait for the next row... */
-			row = rows[row_to_write];
+			const enum row_write_state state = atomic_load(&targ->row_states[row_to_write]);
+			switch (state) {
+				case Empty:
+					// just continue the loop if this item is not ready yet
+					continue;
+				case Created:
+					row = rows[row_to_write];
+					break;
+				case Written:
+					die("It should be impossible to get to Written for in-order writing.\n");
+				default:
+					die("Unknown value for row state: %d\n", state);
+			}
 		} else {
 			/* if we can write in whatever order we want then we can search for unwritten rows */
-			const uint32_t limit = min(*arg->next_row, settings->height);
+			const uint32_t limit = min(*targ->next_row, settings->height);
 			for (; row_to_write < limit; row_to_write++) {
-				row = rows[row_to_write];
-
-				/* we wrote this already */
-				if (row == sentinel_value && row_to_write == min_unwritten_row) {
-					min_unwritten_row++;
-					continue;
+				const enum row_write_state state = atomic_load(&targ->row_states[row_to_write]);
+				switch (state) {
+					case Created:
+						row = rows[row_to_write];
+						break;
+					case Empty:
+						// just continue the loop if this item is not ready yet
+						continue;
+					case Written:
+						// check whether we are min_unwritten_row
+						if (row_to_write == min_unwritten_row) {
+							// if we are then increment min_unwritten row
+							min_unwritten_row++;
+						}
+						// if we've written the value then just continue looping
+						continue;
+					default:
+						die("Unknown value for row state: %d\n", state);
 				}
-
-				/* there is a row ready here */
-				if (row != NULL && row != sentinel_value) break;
+				// if we get here then we have found a valid row
+				break;
 			}
 		}
 
-		if (pthread_mutex_unlock(arg->row_mtx) != 0) die("Failed to release row mutex, exiting");
-
 		/* if there are no rows to write then just continue */
-		if (row == NULL || row == sentinel_value) continue;
+		if (row == NULL) //die("It should be impossible to reach here with a row of NULL");
+			continue;
 
 		/* if writing out of order - seek to the right place in the file first */
-		if (!arg->in_order_write)
+		if (!arg->in_order_write) {
 			fseek(arg->outfile, sizeof(struct ff_header) + row_to_write * (settings->width * sizeof(Pixel)), SEEK_SET);
+		}
 
 		/* write out the row */
 		fwrite(row, sizeof(Pixel), settings->width, arg->outfile);
 
+		/* set the row as Written */
+		atomic_store(&targ->row_states[row_to_write], Written);
+
+		/* declare one less row to write */
+		atomic_fetch_sub(targ->rows_to_write, 1);
+
 		/* free the row */
 		free(row);
-		
-		/* write back sentinel value if we're writing out of order */
-		if (!arg->in_order_write) // no need for mutex here because no other thread will access this address again
-			rows[row_to_write] = sentinel_value;
 
 		/* Update state */
 		if (row_to_write == min_unwritten_row) {
@@ -486,10 +536,10 @@ static void * writer_thread(void * varg) {
 
 // takes a number in 0..n and maps it onto the range [a, b]
 static inline double distribute(const uint32_t i, const uint32_t n, const double a, const double b) {
-    return a + ((double) i / ((double) n / (b - a)));
+	return a + ((double)i / ((double)n / (b - a)));
 }
 
-static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, const struct settings * settings) {
+static inline void colour(const uint32_t x, const uint32_t y, Pixel* pixel, const struct settings* settings) {
 	/*
 	 * colour the pixel with the values for the coordinate at x+iy
 	 *	z = a + bi, c = c + di
@@ -503,19 +553,19 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 	};
 
 	double blx = settings->bottom_left.x,
-	       bly = settings->bottom_left.y,
-	       trx = settings->top_right.x,
-	       try = settings->top_right.y,
-	       c_x = settings->julia_centre.x,
-	       c_y = settings->julia_centre.y;
+		   bly = settings->bottom_left.y,
+		   trx = settings->top_right.x,
+		   try = settings->top_right.y,
+		   c_x = settings->julia_centre.x,
+		   c_y = settings->julia_centre.y;
 
 	size_t i = 0;
 	double c = distribute(x, settings->width, blx, trx),
-	       d = distribute(y, settings->height, try, bly),
-	       a = c,
-	       b = d,
-	       a2 = a * a,
-	       b2 = b * b;
+		   d = distribute(y, settings->height, try, bly),
+		   a = c,
+		   b = d,
+		   a2 = a * a,
+		   b2 = b * b;
 
 	//double cdot = a2 + b2;
 	bool not_in_main_bulb = true; /*(
@@ -554,7 +604,7 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		}
 
 		/* interpolate between colours */
-		size_t colour_one = (size_t) mu;
+		size_t colour_one = (size_t)mu;
 		double t2 = mu - colour_one;
 		double t1 = 1 - t2;
 		colour_one %= settings->colourmap->size;
@@ -564,9 +614,9 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 		Pixel c2 = settings->colourmap->colours[colour_two];
 
 		Pixel colour = {
-			.red   = c1.red   * t1 + c2.red   * t2,
+			.red = c1.red * t1 + c2.red * t2,
 			.green = c1.green * t1 + c2.green * t2,
-			.blue  = c1.blue  * t1 + c2.blue  * t2,
+			.blue = c1.blue * t1 + c2.blue * t2,
 			.alpha = UINT16_MAX,
 		};
 
@@ -576,7 +626,7 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel * pixel, con
 	}
 }
 
-static void die(const char * fmt, ...) {
+static void die(const char* fmt, ...) {
 	va_list vargs;
 	va_start(vargs, fmt);
 
