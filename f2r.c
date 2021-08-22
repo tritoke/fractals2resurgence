@@ -68,10 +68,10 @@ enum row_write_state {
 
 // The state needed to render rows
 struct thread_arg {
-	Pixel** rows;
-	_Atomic enum row_write_state* const row_states;
-	atomic_uint_fast32_t* const next_row;
-	atomic_uint_fast32_t* const rows_to_write;
+	_Atomic(Pixel*)* rows;
+	_Atomic(enum row_write_state)* const row_states;
+	_Atomic(uint32_t)* const next_row;
+	_Atomic(uint32_t)* const rows_to_write;
 	const struct settings* const settings;
 };
 
@@ -195,14 +195,14 @@ int main(int argc, char* argv[]) {
 	 ********************************/
 
 	/* setup for starting the threads */
-	atomic_uint_fast32_t next_row = 0;
-	atomic_uint_fast32_t rows_to_write = 0;
+	_Atomic(uint32_t) next_row = ATOMIC_VAR_INIT(0);
+	_Atomic(uint32_t) rows_to_write = ATOMIC_VAR_INIT(0);
 	pthread_t tids[uo.threads], writer_tid;
 
 	/* set up the thread arguments */
 	/* both free'd by writer_thread on exit */
-	Pixel** rows = calloc(settings.height, sizeof(Pixel*));
-	_Atomic enum row_write_state* row_states = calloc(settings.height, sizeof(_Atomic enum row_write_state));
+	_Atomic(Pixel*)* rows = calloc(settings.height, sizeof(Pixel*));
+	_Atomic(enum row_write_state)* row_states = calloc(settings.height, sizeof(_Atomic(enum row_write_state)));
 
 	// setup the thread argument
 	struct thread_arg targ = {
@@ -393,12 +393,13 @@ static void* rowrenderer(void* varg) {
 	/* colours the y'th row of the image.  */
 	const struct thread_arg* const arg = (struct thread_arg*)varg;
 	const struct settings* const settings = arg->settings;
-	Pixel** rows = arg->rows;
+
+	_Atomic(Pixel*)* rows = arg->rows;
 
 	uint32_t curr_row;
 
 	/* get the current row to render */
-	curr_row = (*arg->next_row)++;
+	curr_row = atomic_fetch_add(arg->next_row, 1);
 
 	while (curr_row < settings->height) {
 		/* Allocate the space for the current row */
@@ -410,7 +411,7 @@ static void* rowrenderer(void* varg) {
 		}
 
 		/* write the pointer to the row out to be written to disk */
-		rows[curr_row] = row;
+		atomic_store(&rows[curr_row], row);
 
 		/* now store Created to this index of row_states */
 		atomic_store(&arg->row_states[curr_row], Created);
@@ -419,7 +420,7 @@ static void* rowrenderer(void* varg) {
 		atomic_fetch_add(arg->rows_to_write, 1);
 
 		/* Get the next row of the image to render */
-		curr_row = (*arg->next_row)++;
+		curr_row = atomic_fetch_add(arg->next_row, 1);
 	}
 
 	return NULL;
@@ -439,12 +440,9 @@ static void* writer_thread(void* varg) {
 
 	fwrite(&header, sizeof(struct ff_header), 1, arg->outfile);
 
-	/* sentinel value for signalling a row has been written */
-	//Pixel* const sentinel_value = (Pixel*)0xDEADBEEFBEEFDEAD;
-
 	uint32_t min_unwritten_row = 0;
 	uint32_t row_to_write;
-	Pixel** rows = targ->rows;
+	_Atomic(Pixel*)* rows = targ->rows;
 	Pixel* row;
 
 	while (min_unwritten_row < settings->height) {
@@ -466,7 +464,7 @@ static void* writer_thread(void* varg) {
 					// just continue the loop if this item is not ready yet
 					continue;
 				case Created:
-					row = rows[row_to_write];
+					row = atomic_load(&rows[row_to_write]);
 					break;
 				case Written:
 					die("It should be impossible to get to Written for in-order writing.\n");
@@ -475,12 +473,12 @@ static void* writer_thread(void* varg) {
 			}
 		} else {
 			/* if we can write in whatever order we want then we can search for unwritten rows */
-			const uint32_t limit = min(*targ->next_row, settings->height);
+			const uint32_t limit = min(atomic_load(targ->next_row), settings->height);
 			for (; row_to_write < limit; row_to_write++) {
 				const enum row_write_state state = atomic_load(&targ->row_states[row_to_write]);
 				switch (state) {
 					case Created:
-						row = rows[row_to_write];
+						row = atomic_load(&rows[row_to_write]);
 						break;
 					case Empty:
 						// just continue the loop if this item is not ready yet
@@ -530,6 +528,7 @@ static void* writer_thread(void* varg) {
 
 	/* free the space used to store the pointers to the rows */
 	free(rows);
+	free(targ->row_states);
 
 	return NULL;
 }
@@ -626,7 +625,7 @@ static inline void colour(const uint32_t x, const uint32_t y, Pixel* pixel, cons
 	}
 }
 
-static void die(const char* fmt, ...) {
+static _Noreturn void die(const char* fmt, ...) {
 	va_list vargs;
 	va_start(vargs, fmt);
 
